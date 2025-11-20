@@ -14,16 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
-import com.google.api.gax.paging.Page;
-import com.google.cloud.storage.Blob;
-import com.google.cloud.storage.BlobId;
-import com.google.cloud.storage.BlobInfo;
-import com.google.cloud.storage.Bucket;
-import com.google.cloud.storage.Storage;
-import com.google.cloud.storage.StorageOptions;
-import com.google.cloud.storage.Blob.BlobSourceOption;
-import com.google.cloud.storage.Storage.BlobField;
-import com.google.cloud.storage.Storage.BucketGetOption;
+import com.salesmanager.core.business.storage.StorageService;
 import com.salesmanager.core.business.exception.ServiceException;
 import com.salesmanager.core.business.modules.cms.content.ContentAssetsManager;
 import com.salesmanager.core.business.modules.cms.impl.CMSManager;
@@ -58,18 +49,17 @@ public class GCPStaticContentAssetsManagerImpl implements ContentAssetsManager {
   @Qualifier("gcpAssetsManager")
   private CMSManager cmsManager;
 
+	@Autowired
+	private StorageService storageService;
+
   @Override
 	public OutputContentFile getFile(String merchantStoreCode, Optional<String> folderPath, FileContentType fileContentType, String contentName)
 			throws ServiceException {
     try {
       String bucketName = bucketName();
-      // Instantiates a client
-      Storage storage = StorageOptions.getDefaultInstance().getService();
-
-      Blob blob = storage.get(BlobId.of(bucketName, nodePath(merchantStoreCode, fileContentType) + contentName));
-      LOGGER.info("Content getFile");
-
-      return getOutputContentFile(blob.getContent(BlobSourceOption.generationMatch()));
+				byte[] content = storageService.getContent(bucketName, nodePath(merchantStoreCode, fileContentType) + contentName);
+				LOGGER.info("Content getFile");
+				return getOutputContentFile(content);
 
     } catch (Exception e) {
       LOGGER.error("Error while getting file", e);
@@ -82,23 +72,18 @@ public class GCPStaticContentAssetsManagerImpl implements ContentAssetsManager {
 			throws ServiceException {
 		try {
 			String bucketName = bucketName();
-			Storage storage = StorageOptions.getDefaultInstance().getService();
-			long bucketMetaGeneration = 42;
-			Bucket bucket = storage.get(bucketName, BucketGetOption.metagenerationMatch(bucketMetaGeneration));
-			Page<Blob> blobs = bucket.list(Storage.BlobListOption.prefix(nodePath(merchantStoreCode, fileContentType)),
-				Storage.BlobListOption.fields(BlobField.NAME));
+				List<String> blobNames = storageService.list(bucketName, nodePath(merchantStoreCode, fileContentType));
 	
 			List<String> fileNames = new ArrayList<String>();
-	
-			for (Blob blob : blobs.iterateAll()) {
-				if (isInsideSubFolder(blob.getName()))
-				continue;
-				String mimetype = URLConnection.guessContentTypeFromName(blob.getName());
-				if (!StringUtils.isBlank(mimetype)) {
-				fileNames.add(getName(blob.getName()));
+
+				for (String blobName : blobNames) {
+					if (isInsideSubFolder(blobName))
+						continue;
+					String mimetype = URLConnection.guessContentTypeFromName(blobName);
+					if (!StringUtils.isBlank(mimetype)) {
+						fileNames.add(getName(blobName));
+					}
 				}
-	
-			}
 	
 			LOGGER.info("Content get file names");
 			return fileNames;
@@ -137,15 +122,11 @@ public class GCPStaticContentAssetsManagerImpl implements ContentAssetsManager {
 	  
 			String nodePath = nodePath(merchantStoreCode, inputStaticContentData.getFileContentType());
 	  
-			Storage storage = StorageOptions.getDefaultInstance().getService();
-	  
-			BlobId blobId = BlobId.of(bucketName, nodePath + inputStaticContentData.getFileName());
-			BlobInfo blobInfo = BlobInfo.newBuilder(blobId).setContentType(inputStaticContentData.getFileContentType().name())
-				.build();
-			byte[] targetArray = new byte[inputStaticContentData.getFile().available()];
-			inputStaticContentData.getFile().read(targetArray);
-			storage.create(blobInfo, targetArray);
-			LOGGER.info("Content add file");
+				byte[] targetArray = new byte[inputStaticContentData.getFile().available()];
+				inputStaticContentData.getFile().read(targetArray);
+				storageService.store(bucketName, nodePath + inputStaticContentData.getFileName(), targetArray,
+						inputStaticContentData.getFileContentType().name(), null);
+				LOGGER.info("Content add file");
 		} catch (IOException e) {
 			LOGGER.error("Error while adding file", e);
 			throw new ServiceException(e);
@@ -167,8 +148,7 @@ public class GCPStaticContentAssetsManagerImpl implements ContentAssetsManager {
 			throws ServiceException {
 		try {
 			String bucketName = bucketName();
-			Storage storage = StorageOptions.getDefaultInstance().getService();
-			storage.delete(bucketName, nodePath(merchantStoreCode, staticContentType) + fileName);
+				storageService.delete(bucketName, nodePath(merchantStoreCode, staticContentType) + fileName);
 		
 			LOGGER.info("Remove file");
 		} catch (final Exception e) {
@@ -182,9 +162,11 @@ public class GCPStaticContentAssetsManagerImpl implements ContentAssetsManager {
 		try {
 			// get buckets
 			String bucketName = bucketName();
-	
-			Storage storage = StorageOptions.getDefaultInstance().getService();
-			storage.delete(bucketName, nodePath(merchantStoreCode));
+
+				List<String> names = storageService.list(bucketName, nodePath(merchantStoreCode));
+				for (String n : names) {
+					storageService.delete(bucketName, n);
+				}
 	
 			LOGGER.info("Remove folder");
 		} catch (final Exception e) {
